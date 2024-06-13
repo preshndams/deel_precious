@@ -13,20 +13,18 @@ afterAll(async () => {
 });
 
 describe("===== Contract ==========", () => {
-    it("check if api request was successful", async () => {
+    it("Expect unauthenticated 403 error list contract without adding profile_id", async () => {
         const response = await request
             .get(`/contracts`)
             .set("Accept", "application/json")
             .expect("Content-Type", /json/)
-        const { success } = response.body;
-
-        expect(success).toBe(true);
+            .expect(403)
     });
 
     it("check if contracts are listed", async () => {
         const response = await request
             .get(`/contracts`)
-            .set("Accept", "application/json")
+            .set({ "Accept": "application/json", "profile_id": 2 })
             .expect("Content-Type", /json/)
         const { data } = response.body;
         expect(data).toBeDefined()

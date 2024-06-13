@@ -3,13 +3,17 @@ const { sequelize } = require('./model')
 const { getProfile } = require('./middleware/getProfile');
 const { CONTRACT_STATUS } = require('./utils/constant');
 const { Sequelize, Op } = require('sequelize');
+const { joiValidator } = require('./utils');
+const { bestClient } = require('./validation');
+const validations = require('./validation');
 const app = express();
 
 app.use(express.json());
 app.set('sequelize', sequelize)
 app.set('models', sequelize.models)
+app.use(express.urlencoded({ extended: true }))
 
-app.get('/contracts/:id', getProfile, async (req, res) => {
+app.get('/contracts/:id', joiValidator(validations.contract), getProfile, async (req, res) => {
   const { Contract } = req.app.get('models')
   const { id } = req.params
   const { id: profileId } = req.profile
@@ -21,10 +25,21 @@ app.get('/contracts/:id', getProfile, async (req, res) => {
   })
 })
 
-app.get('/contracts', async (req, res) => {
+app.get('/contracts', getProfile, async (req, res) => {
   const { Contract } = req.app.get('models')
-  const contracts = await Contract.findAll({ where: { status: CONTRACT_STATUS.IN_PROGRESS } })
-  res.json({ success: true, data: contracts, message: ' List of contracts' })
+  const { id: profileId } = req.profile
+  const contracts = await Contract.findAll({
+    where: {
+      [Op.or]: [
+        { ContractorId: profileId },
+        { ClientId: profileId }
+      ],
+      status: {
+        [Op.ne]: CONTRACT_STATUS.TERMINATED
+      }
+    }
+  })
+  res.json({ success: true, data: contracts, message: ' List of contracts retrieved successfully' })
 })
 
 app.get('/jobs/unpaid', getProfile, async (req, res) => {
@@ -50,7 +65,7 @@ app.get('/jobs/unpaid', getProfile, async (req, res) => {
   })
 })
 
-app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
+app.post('/jobs/:job_id/pay', joiValidator(validations.pay), getProfile, async (req, res) => {
   return await sequelize.transaction(async (transaction) => {
     const { Job, Contract, Profile } = req.app.get('models')
     const { job_id } = req.params;
@@ -58,9 +73,6 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
     const job = await Job.findByPk(job_id, {
       include: {
         model: Contract,
-        where: {
-          status: CONTRACT_STATUS.IN_PROGRESS,
-        },
         attributes: ["ClientId", "ContractorId", "status"]
       },
     })
@@ -78,8 +90,12 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
     if (balance < amountToPay) return res.status(402).json({ message: 'Insufficient funds' });
 
     await Promise.all([
-      Profile.decrement('balance', { by: amountToPay, where: { id: clientId } }, { transaction }),
-      Profile.increment('balance', { by: amountToPay, where: { id: contractorId } }, { transaction }),
+      Profile.update({
+        balance: Sequelize.literal(`balance - ${amountToPay}`)
+      }, { where: { id: clientId } }, transaction),
+      Profile.update({
+        balance: Sequelize.literal(`balance + ${amountToPay}`)
+      }, { where: { id: contractorId } }, transaction), ,
       job.update({ paid: true }, { transaction })
     ])
 
@@ -91,7 +107,7 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
   })
 })
 
-app.post('/balances/deposit/:userId', async (req, res) => {
+app.post('/balances/deposit/:userId', joiValidator(validations.deposit), async (req, res) => {
   return await sequelize.transaction(async (transaction) => {
     const { Job, Contract, Profile } = req.app.get('models')
     const { userId } = req.params;
@@ -119,7 +135,7 @@ app.post('/balances/deposit/:userId', async (req, res) => {
   })
 })
 
-app.get('/admin/best-profession', async (req, res) => {
+app.get('/admin/best-profession', joiValidator(validations.bestProfession), async (req, res) => {
   const { Job, Contract, Profile } = req.app.get('models')
   const { start, end } = req.query;
   const startDate = new Date(start);
@@ -159,9 +175,9 @@ app.get('/admin/best-profession', async (req, res) => {
   })
 })
 
-app.get('/admin/best-clients', async (req, res) => {
+app.get('/admin/best-clients', joiValidator(validations.bestClient), async (req, res) => {
   const { Job, Contract } = req.app.get('models')
-  const { start, end, limit = 2 } = req.query;
+  const { start, end, limit } = req.query;
   const startDate = new Date(start);
   const endDate = new Date(end);
   const result = await Job.findAll({
@@ -197,5 +213,11 @@ app.use((req, res) => {
     message: `Requested route (${req.originalUrl} ) not found`,
   });
 });
+
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  res.status(err.httpStatusCode || 500).json({ message: err.message })
+});
+
 
 module.exports = app
